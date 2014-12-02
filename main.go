@@ -38,6 +38,9 @@ func prepareTrigger(cmd string) *exec.Cmd {
 
 func runTrigger(trigger *exec.Cmd, name string) {
 	if trigger != nil {
+		if *debug {
+			fmt.Printf("[powant] %v\n", trigger)
+		}
 		if err := trigger.Run(); err != nil {
 			die2(fmt.Sprintf("[powant] Can't run the %v trigger: %v", name, err), 127)
 		}
@@ -45,11 +48,16 @@ func runTrigger(trigger *exec.Cmd, name string) {
 }
 
 var verbose *bool = flag.Bool("v", false, "Verbose")
+var debug *bool = flag.Bool("d", false, "Debug")
 
 func main() {
 	tBefore := flag.String("b", "noop", "A trigger to call before running the command")
 	tAfter := flag.String("a", "noop", "A trigger to call before running the command")
 	flag.Parse()
+
+	if *debug {
+		*verbose = true
+	}
 
 	if len(flag.Args()) == 0 {
 		die("[powant] Missing command")
@@ -76,6 +84,9 @@ func main() {
 		command.Process.Signal(s)
 	}()
 
+	if *debug {
+		fmt.Printf("[powant] %v\n", command)
+	}
 	if err := command.Start(); err != nil {
 		die2(fmt.Sprintf("[powant] Can't start the process: %v", err), 127)
 	}
