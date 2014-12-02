@@ -44,6 +44,8 @@ func runTrigger(trigger *exec.Cmd, name string) {
 	}
 }
 
+var verbose *bool = flag.Bool("v", false, "Verbose")
+
 func main() {
 	tBefore := flag.String("b", "noop", "A trigger to call before running the command")
 	tAfter := flag.String("a", "noop", "A trigger to call before running the command")
@@ -68,6 +70,9 @@ func main() {
 		syscall.SIGQUIT)
 	go func() {
 		s := <-sigc
+		if *verbose {
+			fmt.Printf("[powant] Received signal %v\n", s)
+		}
 		command.Process.Signal(s)
 	}()
 
