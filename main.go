@@ -6,7 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"syscall"
+
+	"github.com/dohzya/choose-port/chooseport"
 )
 
 func die(msg string) {
@@ -18,19 +21,23 @@ func die2(msg string, status int) {
 	os.Exit(status)
 }
 
-func prepareCmd(cmd ...string) *exec.Cmd {
-	command := exec.Command(cmd[0], cmd[1:]...)
+func prepareCmd(cmd []string, mapping func(string) string) *exec.Cmd {
+	args := make([]string, len(cmd)-1)
+	for i, v := range cmd[1:] {
+		args[i] = os.Expand(v, mapping)
+	}
+	command := exec.Command(cmd[0], args...)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	command.Stdin = os.Stdin
 	return command
 }
 
-func prepareTrigger(cmd string) *exec.Cmd {
-	if cmd == "noop" {
+func prepareTrigger(cmd *string) *exec.Cmd {
+	if cmd == nil {
 		return nil
 	}
-	command := exec.Command("sh", "-c", cmd)
+	command := exec.Command("sh", "-c", *cmd)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	return command
@@ -53,22 +60,73 @@ var debug *bool = flag.Bool("d", false, "Debug")
 func main() {
 	tBefore := flag.String("b", "noop", "A trigger to call before running the command")
 	tAfter := flag.String("a", "noop", "A trigger to call before running the command")
+	// helpers
+	powName := flag.String("pow", "", "The pow's name of the app")
+	port := flag.Int("port", 0, "The port (for pow-based apps)")
 	flag.Parse()
-
-	if *debug {
-		*verbose = true
-	}
 
 	if len(flag.Args()) == 0 {
 		die("[powant] Missing command")
 	}
 
-	cBefore := prepareTrigger(*tBefore)
-	cAfter := prepareTrigger(*tAfter)
+	if *debug {
+		*verbose = true
+	}
+	if *tBefore == "noop" {
+		tBefore = nil
+	}
+	if *tAfter == "noop" {
+		tAfter = nil
+	}
+	if *powName == "" {
+		powName = nil
+	}
+
+	env := make(map[string]string)
+
+	if powName != nil {
+
+		if *port == 0 {
+			env := os.Getenv("POW_PORT")
+			if env != "" {
+				p64, err := strconv.ParseInt(env, 0, 0)
+				if err != nil {
+					die2(fmt.Sprintf("[powant] Can't parse port: %v", err), 127)
+				}
+				p := int(p64)
+				port = &p
+			} else {
+				p := chooseport.Random()
+				port = &p
+			}
+		}
+
+		env["POW_PORT"] = fmt.Sprintf("%d", *port)
+		os.Setenv("POW_PORT", env["POW_PORT"])
+
+		if tBefore == nil {
+			cmd := fmt.Sprintf("echo %d > '%s/.pow/%s'", *port, os.Getenv("HOME"), *powName)
+			tBefore = &cmd
+		}
+
+		if tAfter == nil {
+			cmd := fmt.Sprintf("rm '%s/.pow/%s'", os.Getenv("HOME"), *powName)
+			tAfter = &cmd
+		}
+
+	}
+
+	cBefore := prepareTrigger(tBefore)
+	cAfter := prepareTrigger(tAfter)
 
 	runTrigger(cBefore, "BEFORE")
 
-	command := prepareCmd(flag.Args()...)
+	if *debug {
+		fmt.Printf("[powant] env = %v\n", env)
+	}
+	command := prepareCmd(flag.Args(), func(key string) string {
+		return env[key]
+	})
 
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc,
