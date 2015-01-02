@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/dohzya/choose-port/chooseport"
@@ -21,12 +22,38 @@ func die2(msg string, status int) {
 	os.Exit(status)
 }
 
-func prepareCmd(cmd []string, mapping func(string) string) *exec.Cmd {
-	args := make([]string, len(cmd)-1)
-	for i, v := range cmd[1:] {
+func prepareCmd(cmd []string, env map[string]string) *exec.Cmd {
+	mapping := func(key string) string { return env[key] }
+	// handling env (PORT=\POW_PORT my-server)
+	idx := 0
+	for {
+		if idx >= len(cmd) {
+			break
+		}
+		if s := strings.Index(cmd[idx], "="); s < 0 {
+			break
+		}
+		splited := strings.SplitN(cmd[idx], "=", 2)
+		name := splited[0]
+		value := os.Expand(splited[1], mapping)
+		env[name] = value
+		if *debug {
+			fmt.Fprintf(os.Stderr, "[powant] Set env %v=%v\n", name, value)
+		}
+		if err := os.Setenv(name, value); err != nil {
+			fmt.Fprintf(os.Stderr, "[powant] Can't change env oO %v\n", err.Error())
+		}
+		idx++
+	}
+	c := cmd[idx]
+	idx++
+	// prepare args (my-server $POW_ENV)
+	args := make([]string, len(cmd)-idx)
+	for i, v := range cmd[idx:] {
 		args[i] = os.Expand(v, mapping)
 	}
-	command := exec.Command(cmd[0], args...)
+	// finally run the command
+	command := exec.Command(c, args...)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	command.Stdin = os.Stdin
@@ -46,7 +73,7 @@ func prepareTrigger(cmd *string) *exec.Cmd {
 func runTrigger(trigger *exec.Cmd, name string) {
 	if trigger != nil {
 		if *debug {
-			fmt.Printf("[powant] %v\n", trigger)
+			fmt.Fprintf(os.Stderr, "[powant] %v\n", trigger)
 		}
 		if err := trigger.Run(); err != nil {
 			die2(fmt.Sprintf("[powant] Can't run the %v trigger: %v", name, err), 127)
@@ -54,8 +81,8 @@ func runTrigger(trigger *exec.Cmd, name string) {
 	}
 }
 
-var verbose *bool = flag.Bool("v", false, "Verbose")
-var debug *bool = flag.Bool("d", false, "Debug")
+var verbose = flag.Bool("v", false, "Verbose")
+var debug = flag.Bool("d", false, "Debug")
 
 func main() {
 	tBefore := flag.String("b", "noop", "A trigger to call before running the command")
@@ -102,7 +129,12 @@ func main() {
 		}
 
 		env["POW_PORT"] = fmt.Sprintf("%d", *port)
-		os.Setenv("POW_PORT", env["POW_PORT"])
+		if *debug {
+			fmt.Fprintf(os.Stderr, "[powant] Set env POW_PORT=%v\n", env["POW_PORT"])
+		}
+		if err := os.Setenv("POW_PORT", env["POW_PORT"]); err != nil {
+			fmt.Fprintf(os.Stderr, "[powant] Can't change env oO %v\n", err.Error())
+		}
 
 		if tBefore == nil {
 			cmd := fmt.Sprintf("echo %d > '%s/.pow/%s'", *port, os.Getenv("HOME"), *powName)
@@ -122,11 +154,9 @@ func main() {
 	runTrigger(cBefore, "BEFORE")
 
 	if *debug {
-		fmt.Printf("[powant] env = %v\n", env)
+		fmt.Fprintf(os.Stderr, "[powant] env = %v\n", env)
 	}
-	command := prepareCmd(flag.Args(), func(key string) string {
-		return env[key]
-	})
+	command := prepareCmd(flag.Args(), env)
 
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc,
@@ -137,13 +167,15 @@ func main() {
 	go func() {
 		s := <-sigc
 		if *verbose {
-			fmt.Printf("[powant] Received signal %v\n", s)
+			fmt.Fprintf(os.Stderr, "[powant] Received signal %v\n", s)
 		}
-		command.Process.Signal(s)
+		if err := command.Process.Signal(s); err != nil {
+			fmt.Fprintf(os.Stderr, "[powant] Can't propagate signal oO %v\n", err.Error())
+		}
 	}()
 
 	if *debug {
-		fmt.Printf("[powant] %v\n", command)
+		fmt.Fprintf(os.Stderr, "[powant] %v\n", command)
 	}
 	if err := command.Start(); err != nil {
 		die2(fmt.Sprintf("[powant] Can't start the process: %v", err), 127)
